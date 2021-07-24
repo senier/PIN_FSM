@@ -1,0 +1,130 @@
+package PIN is
+
+   type PIN is mod 2**64;
+   type Kind is (Auth, Deauth, Forward) with Size => 8;
+   type Retries is range 0 .. 6 with Size => 8;
+
+   type Config is
+   message
+      Max_Retries : Retries;
+      PIN         : PIN;
+   end message;
+
+   type Request is
+   message
+      Kind : Kind
+         then PIN
+            if Kind = Auth
+         then Data
+            if Kind = Forward
+         then null
+            if Kind = Deauth;
+      PIN : PIN
+         then null;
+      Data : Opaque
+         with Size => Message'Last - Kind'Last;
+   end message;
+   
+   generic
+      User_Channel     : Channel with Readable;
+      Config_Channel   : Channel with Readable;
+      Upstream_Channel : Channel with Writable;
+   session Authentication with
+      Initial => Initialize,
+      Final   => Error
+   is
+      PIN         : PIN; 
+      Retries     : Retries;
+      Max_Retries : Retries;
+      Request     : Request;
+      Config      : Config;
+   begin
+
+      state Initialize
+      is
+      begin
+         Config_Channel'Read (Config);
+      transition
+         then Error
+            if Config'Valid = False
+         then Setup
+      end Initialize;
+
+      state Setup
+      is
+      begin
+         PIN         := Config.PIN;
+         Max_Retries := Config.Max_Retries;
+      transition
+         then Locked
+      exception
+         --  FIXME: Why is an exception transition required here?
+         then Error
+      end Setup;
+
+      state Locked
+      is
+      begin
+         User_Channel'Read (Request);
+         Retries := Retries + 1;
+      transition
+         then Error
+            if Request'Valid = False
+         then Authenticate
+            if Request.Kind = Auth
+         then Error
+      end Locked;
+
+      state Authenticate
+      is
+      begin
+      transition
+         then Disabled
+            if Retries > Max_Retries + 1
+         then Authenticated
+            if Request.PIN = PIN
+         then Locked
+      end Authenticate;
+
+      state Disabled
+      is
+      begin
+      transition
+         then Disabled
+      end Disabled;
+
+      --  INVARIANT: only reached when configured retries not exceeded
+      --  INVARIANT: only reached when sent PIN equaled configured PIN
+      state Authenticated
+      is
+      begin
+         Retries := 0;
+         User_Channel'Read (Request);
+      transition
+         then Error
+            if Request'Valid = False
+         then Authenticate
+            if Request.Kind = Auth
+         then Locked
+            if Request.Kind = Deauth
+         then Forwarding
+            if Request.Kind = Forward
+         then Error
+      end Authenticated;
+
+      --  INVARIANT: Only messages of kind "forward" are ever written to Upstream_Channel
+      --  INVARIANT: Only authenticated users can forward messages
+      state Forwarding
+      is
+      begin
+         Upstream_Channel'Write (Request);
+      transition
+         then Authenticated
+      exception
+         then Error
+      end Forwarding;
+
+      state Error is null state;
+   end Authentication;
+
+end PIN;
