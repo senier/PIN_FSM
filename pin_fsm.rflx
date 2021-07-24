@@ -1,4 +1,4 @@
-package PIN is
+package PIN_FSM is
 
    type PIN is mod 2**64;
    type Kind is (Auth, Deauth, Forward) with Size => 8;
@@ -127,4 +127,4 @@ package PIN is
       state Error is null state;
    end Authentication;
 
-end PIN;
+end PIN_FSM;
