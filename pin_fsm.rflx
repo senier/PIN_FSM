@@ -1,7 +1,7 @@
 package PIN_FSM is
 
    type PIN is mod 2**64;
-   type Kind is (Auth, Deauth, Forward) with Size => 8;
+   type Kind is (Auth => 1, Deauth => 2, Forward => 3) with Size => 8;
    type Retries is range 0 .. 6 with Size => 8;
 
    type Config is
@@ -72,6 +72,8 @@ package PIN_FSM is
             if Request'Valid = False
          then Authenticate
             if Request.Kind = Auth
+         then Locked
+            if Request.Kind = Deauth
          then Error
       end Locked;
 
@@ -103,7 +105,7 @@ package PIN_FSM is
       transition
          then Error
             if Request'Valid = False
-         then Authenticate
+         then Authenticated
             if Request.Kind = Auth
          then Locked
             if Request.Kind = Deauth
