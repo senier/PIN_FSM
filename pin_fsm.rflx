@@ -1,7 +1,7 @@
 package PIN_FSM is
 
    type PIN is mod 2**64;
-   type Kind is (Auth => 1, Deauth => 2, Forward => 3) with Size => 8;
+   type Kind is (Auth => 1, Deauth => 2, Forward => 3, Change => 4) with Size => 8;
    type Retries is range 0 .. 6 with Size => 8;
 
    type Config is
@@ -14,7 +14,7 @@ package PIN_FSM is
    message
       Kind : Kind
          then PIN
-            if Kind = Auth
+            if Kind = Auth or Kind = Change
          then Data
             if Kind = Forward
          then null
@@ -58,7 +58,6 @@ package PIN_FSM is
       transition
          then Locked
       exception
-         --  FIXME: Why is an exception transition required here?
          then Error
       end Setup;
 
@@ -70,24 +69,18 @@ package PIN_FSM is
       transition
          then Error
             if Request'Valid = False
-         then Authenticate
+         then Disabled
+            if Retries > Max_Retries
+         then Authenticated
             if Request.Kind = Auth
+               and Request.PIN = PIN
          then Locked
-            if Request.Kind = Deauth
+            if (Request.Kind = Auth and Request.PIN /= PIN)
+               or Request.Kind = Deauth
          then Error
       end Locked;
 
-      state Authenticate
-      is
-      begin
-      transition
-         then Disabled
-            if Retries > Max_Retries + 1
-         then Authenticated
-            if Request.PIN = PIN
-         then Locked
-      end Authenticate;
-
+      --  INVARIANT: reached after Max_Retries unsuccessful authentication attempts
       state Disabled
       is
       begin
@@ -96,7 +89,10 @@ package PIN_FSM is
       end Disabled;
 
       --  INVARIANT: only reached when configured retries not exceeded
-      --  INVARIANT: only reached when sent PIN equaled configured PIN
+      --  INVARIANT: only reached when sent PIN equales previously set PIN
+      --  INVARIANT: only remain in authenticated when correct PIN presented
+      --  INVARIANT: only remain in authenticated when correct PIN presented
+      --  INVARIANT: goes into locked when incorrect PIN presented
       state Authenticated
       is
       begin
@@ -106,13 +102,27 @@ package PIN_FSM is
          then Error
             if Request'Valid = False
          then Authenticated
-            if Request.Kind = Auth
+            if Request.Kind = Auth and PIN = Request.PIN
          then Locked
-            if Request.Kind = Deauth
+            if (Request.Kind = Auth and PIN /= Request.PIN)
+               or Request.Kind = Deauth
          then Forwarding
             if Request.Kind = Forward
+         then Update
+            if Request.Kind = Change
          then Error
       end Authenticated;
+
+      --  INVARIANT: Only authenticated users can change the PIN
+      state Update
+      is
+      begin
+         PIN := Request.PIN;
+      transition
+         then Authenticated
+      exception
+         then Error
+      end Update;
 
       --  INVARIANT: Only messages of kind "forward" are ever written to Upstream_Channel
       --  INVARIANT: Only authenticated users can forward messages

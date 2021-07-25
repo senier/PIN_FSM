@@ -1,9 +1,13 @@
-obj/main: obj/generated/rflx.ads
+obj/main: generated/rflx.ads
 	gprbuild -P pin
 
-obj/generated/rflx.ads: pin_fsm.rflx
-	mkdir -p obj/generated
-	rflx generate -d obj/generated $<
+generate: generated/rflx.ads
+
+generated/rflx.ads: pin_fsm.rflx .FORCE
+	mkdir -p generated
+	rflx generate -d generated $<
 
 clean:
 	rm -rf obj
+
+.FORCE:

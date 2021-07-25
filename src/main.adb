@@ -28,7 +28,6 @@ package body Main is
       use type RFLX.RFLX_Types.Length;
       use type RFLX.RFLX_Types.Index;
    begin
-      Ada.Text_IO.Put_Line ("BLEN: " & Buffer'Length'Image);
       loop
          Ada.Text_IO.Put ("> ");
          declare
@@ -60,6 +59,20 @@ package body Main is
             end if;
 
             if
+               Data'Length > 7
+               and then Buffer'Length > Data'Length - 7
+               and then Data (1 .. 7) = "CHANGE "
+            then
+               Buffer (1) := 4;  --  Kind = Change
+               for I in 1 .. Data'Length - 7 loop
+                  Buffer (1 + RFLX.RFLX_Types.Index (I)) :=
+                     RFLX.RFLX_Types.Byte (Character'Pos (Data (7 + I)));
+               end loop;
+               Length := Data'Length - 6;
+               exit;
+            end if;
+
+            if
                Data'Length > 8
                and then Buffer'Length > Data'Length - 8
                and then Data (1 .. 8) = "FORWARD "
@@ -76,8 +89,6 @@ package body Main is
             Ada.Text_IO.Put_Line ("Syntax error: " & Data);
          end;
       end loop;
-
-      Ada.Text_IO.Put_Line ("User_Read:" & RFLX.RFLX_Types.Index (Length)'Image);
    exception
       when Ada.IO_Exceptions.End_Error =>
          raise User_Done;
@@ -102,7 +113,7 @@ package body Main is
       loop
          Text (Integer (I)) := Character'Val (Buffer (I));
       end loop;
-      Ada.Text_IO.Put_Line ("TO UPSTREAM: " & Text);
+      Ada.Text_IO.Put_Line (">>> TO UPSTREAM: " & Text);
    end Upstream_Write;
 
    package FSM is new RFLX.PIN_FSM.Authentication
@@ -114,6 +125,16 @@ package body Main is
 
    procedure Run is
    begin
+      Ada.Text_IO.Put_Line
+         ("AUTH ????????   - Authenticate with PIN" & ASCII.LF
+          & "CHANGE ???????? - Change PIN" & ASCII.LF
+          & "DEAUTH          - Deauthenticate" & ASCII.LF
+          & "FORWARD <data>  - Forward data to upstream" & ASCII.LF
+          & "Ctrl+D          - Exit" & ASCII.LF
+          & "------------------------------------------" & ASCII.LF
+          & "Default PIN:     " & Config.PIN & ASCII.LF
+          & "Default Retries:" & Config.Retries'Image & ASCII.LF
+          & "All PINs must be exactly 8 digits" & ASCII.LF);
       FSM.Run;
    exception
       when User_Done =>
