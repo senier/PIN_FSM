@@ -91,7 +91,6 @@ package PIN_FSM is
       --  INVARIANT: only reached when configured retries not exceeded
       --  INVARIANT: only reached when sent PIN equales previously set PIN
       --  INVARIANT: only remain in authenticated when correct PIN presented
-      --  INVARIANT: only remain in authenticated when correct PIN presented
       --  INVARIANT: goes into locked when incorrect PIN presented
       state Authenticated
       is
