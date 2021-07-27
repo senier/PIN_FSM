@@ -1,5 +1,7 @@
 package PIN_FSM is
 
+   type System_State is (Uninitialized, Initialized) with Size => 8;
+   type Auth_State is (Unauthenticated, Authenticated) with Size => 8;
    type PIN is mod 2**64;
    type Kind is (Auth => 1, Deauth => 2, Forward => 3, Change => 4) with Size => 8;
    type Retries is range 0 .. 6 with Size => 8;
@@ -33,13 +35,22 @@ package PIN_FSM is
       Initial => Initialize,
       Final   => Error
    is
-      PIN         : PIN; 
-      Retries     : Retries;
-      Max_Retries : Retries;
-      Request     : Request;
-      Config      : Config;
+      System_State : System_State := Uninitialized;
+      Auth_State   : Auth_State   := Unauthenticated;
+      PIN          : PIN;
+      Retries      : Retries;
+      Max_Retries  : Retries;
+      Request      : Request;
+      Config       : Config;
+      --  INVARIANT: if PIN is changed then System_State = Uninitialized or Auth_State = Authenticated
+      --  INVARIANT: if Retries >= Max_Retries then transition target is Disabled
+      --  INVARIANT: if transition target is Authenticated then Retries < Max_Retries and Request.Kind = Auth and Request.PIN = PIN
+      --  INVARIANT: if Request.Kind = Auth and Request.PIN /= PIN then transition target is Locked
+      --  INVARIANT: if Upstream_Channel'Write (Request) is used then Request.Kind = Forward
+      --  INVARIANT: if Upstream_Channel'Write is used then Auth_State = Authenticated
+      --  INVARIANT: if Config is changed then System_State = Uninitialized and Auth_State = Unauthenticated
+      --  INVARIANT: if System_State = Initialized then System_State is not changed
    begin
-
       state Initialize
       is
       begin
@@ -53,8 +64,9 @@ package PIN_FSM is
       state Setup
       is
       begin
-         PIN         := Config.PIN;
-         Max_Retries := Config.Max_Retries;
+         PIN          := Config.PIN;
+         Max_Retries  := Config.Max_Retries;
+         System_State := Initialized;
       transition
          then Locked
       exception
@@ -64,6 +76,7 @@ package PIN_FSM is
       state Locked
       is
       begin
+         Auth_State := Unauthenticated;
          User_Channel'Read (Request);
          Retries := Retries + 1;
       transition
@@ -80,7 +93,6 @@ package PIN_FSM is
          then Error
       end Locked;
 
-      --  INVARIANT: reached after Max_Retries unsuccessful authentication attempts
       state Disabled
       is
       begin
@@ -88,13 +100,10 @@ package PIN_FSM is
          then Disabled
       end Disabled;
 
-      --  INVARIANT: only reached when configured retries not exceeded
-      --  INVARIANT: only reached when sent PIN equales previously set PIN
-      --  INVARIANT: only remain in authenticated when correct PIN presented
-      --  INVARIANT: goes into locked when incorrect PIN presented
       state Authenticated
       is
       begin
+         Auth_State := Authenticated;
          Retries := 0;
          User_Channel'Read (Request);
       transition
@@ -112,7 +121,6 @@ package PIN_FSM is
          then Error
       end Authenticated;
 
-      --  INVARIANT: Only authenticated users can change the PIN
       state Update
       is
       begin
@@ -123,8 +131,6 @@ package PIN_FSM is
          then Error
       end Update;
 
-      --  INVARIANT: Only messages of kind "forward" are ever written to Upstream_Channel
-      --  INVARIANT: Only authenticated users can forward messages
       state Forwarding
       is
       begin
