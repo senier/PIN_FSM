@@ -7,26 +7,26 @@ package PIN_FSM is
    type Retries is range 0 .. 6 with Size => 8;
 
    type Config is
-   message
-      Max_Retries : Retries;
-      PIN         : PIN;
-   end message;
+      message
+         Max_Retries : Retries;
+         PIN         : PIN;
+      end message;
 
    type Request is
-   message
-      Kind : Kind
-         then PIN
-            if Kind = Auth or Kind = Change
-         then Data
-            if Kind = Forward
-         then null
-            if Kind = Deauth;
-      PIN : PIN
-         then null;
-      Data : Opaque
-         with Size => Message'Last - Kind'Last;
-   end message;
-   
+      message
+         Kind : Kind
+            then PIN
+               if Kind = Auth or Kind = Change
+            then Data
+               if Kind = Forward
+            then null
+               if Kind = Deauth;
+         PIN : PIN
+            then null;
+         Data : Opaque
+            with Size => Message'Last - Kind'Last;
+      end message;
+
    generic
       User_Channel     : Channel with Readable;
       Config_Channel   : Channel with Readable;
