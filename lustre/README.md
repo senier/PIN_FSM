@@ -60,6 +60,7 @@ Then, you can run `kind2` to reprove all properties on all nodes of the model, l
 There are three files:
 
 - `pin.lus`: the top-level model
+- `pin_automaton.lus`: reencoding of the model using the hierarchical-automaton syntax
 - `types.lus`: type definitions, drawn from the rflx
 - `pltl.lus`: observers implementing pltl operators
 

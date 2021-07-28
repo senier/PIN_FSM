@@ -1,0 +1,278 @@
+include "types.lus"
+include "pltl.lus"
+
+
+-- These are uninterpreted functions (that don't kill IC3). We don't have one
+-- for the upstream, because a node call with no effect doesn't have any
+-- meaning in lustre (I'm not even sure it's possible).
+node imported user_channel() returns (message : request);
+node imported config_channel() returns (message : config);
+
+
+--
+-- authentication
+--
+-- Top-level node - no inputs; no outputs; just models our system
+node authentication() returns ();
+var
+    -- State vector from the rflx
+    system_state : system_state;
+    auth_state : auth_state;
+    pin : pin;
+    retries : retries;
+    max_retries : retries;
+    request : request;
+    config : config;
+
+    -- Model a call to Upstream_Channel'Write explicitly with a boolean flag.
+    use_upstream : bool;
+let
+    -- For syntax explanation, see:
+    -- https://kind.cs.uiowa.edu/kind2_user_doc/2_input/1_lustre.html#hierarchical-automata
+    automaton authentication
+        initial state initialize:
+            let
+                config = config_channel();
+
+                system_state = uninitialized;
+                auth_state   = unauthenticated;
+
+                pin          = 0;
+                retries      = 0;
+                max_retries  = 0;
+                request      = empty_request;
+                use_upstream = false;
+            tel
+
+            until
+                if not config.valid
+                    restart error
+                else
+                    restart setup
+                end;
+
+
+        state setup:
+            let
+                pin          = config.pin;
+                max_retries  = config.max_retries;
+                system_state = initialized;
+
+                -- frame condition
+                auth_state   = last auth_state;
+                retries      = last retries;
+                request      = last request;
+                config       = last config;
+                use_upstream = last use_upstream;
+            tel
+
+            until restart locked;
+
+
+        state locked:
+            let
+                auth_state = unauthenticated;
+                request    = user_channel();
+                retries    = last retries + 1;
+
+                -- frame condition
+                system_state = last system_state;
+                pin          = last pin;
+                max_retries  = last retries;
+                config       = last config;
+                use_upstream = last use_upstream;
+            tel
+
+            until
+                if not request.valid
+                    restart error
+                elsif retries >= max_retries
+                    restart disabled
+                elsif request.kind = auth and request.pin = pin
+                    restart authenticated
+                elsif (request.kind = auth and request.pin <> pin) or
+                      request.kind = deauth
+                    resume locked
+                else
+                    restart error
+                end;
+
+
+        state disabled:
+            let
+                -- frame condition
+                system_state = last system_state;
+                auth_state   = last auth_state;
+                pin          = last pin;
+                retries      = last retries;
+                max_retries  = last retries;
+                request      = last request;
+                config       = last config;
+                use_upstream = last use_upstream;
+            tel
+
+            until resume disabled;
+
+
+        state authenticated:
+            let
+                auth_state = authenticated_;
+                retries    = 0;
+                request    = user_channel();
+
+                -- frame condition
+                system_state = last system_state;
+                pin          = last pin;
+                max_retries  = last retries;
+                config       = last config;
+                use_upstream = last use_upstream;
+            tel
+
+            until
+                if not request.valid
+                    restart error
+                elsif request.kind = auth and request.pin = pin
+                    resume authenticated
+                elsif (request.kind = auth and request.pin <> pin) or
+                      request.kind = deauth
+                    restart locked
+                elsif request.kind = forward
+                    restart forwarding
+                elsif request.kind = change
+                    restart update
+                else
+                    restart error
+                end;
+
+
+        state update:
+            let
+                pin = request.pin;
+
+                -- frame condition
+                system_state = last system_state;
+                auth_state   = last auth_state;
+                retries      = last retries;
+                max_retries  = last retries;
+                request      = last request;
+                config       = last config;
+                use_upstream = last use_upstream;
+            tel
+
+            until restart authenticated;
+
+
+        state forwarding:
+            let
+                use_upstream = true;
+
+                -- frame condition
+                system_state = last system_state;
+                auth_state   = last auth_state;
+                pin          = last pin;
+                retries      = last retries;
+                max_retries  = last retries;
+                request      = last request;
+                config       = last config;
+            tel
+
+            until restart authenticated;
+
+
+        state error:
+            let
+                -- frame condition
+                system_state = last system_state;
+                auth_state   = last auth_state;
+                pin          = last pin;
+                retries      = last retries;
+                max_retries  = last retries;
+                request      = last request;
+                config       = last config;
+                use_upstream = last use_upstream;
+            tel
+
+            until resume error;
+
+
+    -- ===================================================================== --
+    -- Properties
+    --
+    -- These are taken from the rflx. We might want more, to ensure the model
+    -- is correct. I'm especially concerned that the retry timing is wrong but
+    -- haven't thought terribly hard about it.
+    --
+    -- O() means "Once" in PLTL: O(p) is true at the time p becomes true and
+    -- remains true thereafter.
+
+
+    -- I decided that "PIN is changed" should mean _after_ authentication only.
+    -- Note: false until I figure out how to talk about states and transitions.
+    check "if PIN is changed then System_State = Uninitialized or Auth_State = Authenticated"
+    (
+        -- O(authentication.state = authenticated) and
+        (0 -> pre(pin)) <> pin
+    ) => (
+        system_state = uninitialized or
+        auth_state   = authenticated_
+    );
+
+    -- -- Currently false, because Max_Retries may be zero. Even once we fix that,
+    -- -- need to restrict to after set up.
+    -- check "if Retries >= Max_Retries then transition target is Disabled"
+    -- (
+    --     retries >= max_retries
+    -- ) => (
+    --     transition = disabled
+    -- );
+
+    -- -- Currently false, because update -> authenticated is unconditional and
+    -- -- because request is not reread until after entering authenticated state
+    -- -- (so request.kind = auth will fail).
+    -- check "if transition target is Authenticated then Retries < Max_Retries and Request.Kind = Auth and Request.PIN = PIN"
+    -- (
+    --     transition = authenticated
+    -- ) => (
+    --     retries < max_retries and
+    --     request.kind = auth and
+    --     request.pin  = pin
+    -- );
+
+    -- -- Currently false: retries = max retries sends us to disabled
+    -- check "if Request.Kind = Auth and Request.PIN /= PIN then transition target is Locked"
+    -- (
+    --     request.kind = auth and
+    --     request.pin <> pin
+    -- ) => (
+    --     transition = locked
+    -- );
+
+    check "if Upstream_Channel'Write (Request) is used then Request.Kind = Forward"
+    (
+        use_upstream
+    ) => (
+        request.kind = forward
+    );
+
+    check "if Upstream_Channel'Write is used then Auth_State = Authenticated"
+    (
+        use_upstream
+    ) => (
+        auth_state = authenticated_
+    );
+
+    check "if Config is changed then System_State = Uninitialized and Auth_State = Unauthenticated"
+    (
+        (empty_config -> pre(config)) <> config
+    ) => (
+        system_state = uninitialized and
+        auth_state   = unauthenticated
+    );
+
+    check "if System_State = Initialized then System_State is not changed"
+    (
+        O(system_state = initialized)
+    ) => (
+        system_state = initialized
+    );
+tel;
