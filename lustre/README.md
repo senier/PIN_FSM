@@ -52,16 +52,27 @@ To run `kind2`, you first need to export the `opam`-provided environment:
 
 Then, you can run `kind2` to reprove all properties on all nodes of the model, like this:
 
-    PIN_FSM/lustre$ kind2 pin.lus
+    PIN_FSM/lustre$ kind2 pin_nodes.lus
 
 
 # Model #
 
-There are three files:
+There are five files:
 
 - `pin.lus`: the top-level model
 - `pin_automaton.lus`: reencoding of the model using the hierarchical-automaton syntax
 - `types.lus`: type definitions, drawn from the rflx
 - `pltl.lus`: observers implementing pltl operators
 
-Comments in the model file attempt to explain what's going on.
+- `pin_nodes.lus`
+
+Of these, the most interesting is the last: `pin_nodes.lus`.
+This model attempts to illustrate how an automatic translation from RecordFlux to Lustre might be structured.
+All types are declared in the file.
+The naming of types and the state enumerations has been improved to reduce changes of confusing during parsing.
+The variables are packed into a record, which makes the resulting model more compact and also makes it easier to identify which variables are drawn from the RecordFlux and which are introduced to control the model.
+Protocol states are implemented as Lustre nodes.
+This allows a more direct comparison to be made with the original RecordFlux as compared to the giant if expression in `pin.lus`.
+
+Analysis time is nearly identical to that of `pin.lus`.
+The model also appears to be more accurate, possibly because it was partly retranslated by hand.

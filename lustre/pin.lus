@@ -106,7 +106,8 @@ let
                             disabled
                           else if request.kind = auth and request.pin = pin then
                             authenticated
-                          else if request.kind = auth and request.pin <> pin then
+                          else if (request.kind = auth and request.pin <> pin) or
+                                  request.kind = deauth then
                             locked
                           else
                             error),
@@ -133,8 +134,9 @@ let
                             error
                           else if request.kind = auth and request.pin = pin then
                             authenticated
-                          else if request.kind = auth and request.pin <> pin then
-                            disabled
+                          else if (request.kind = auth and request.pin <> pin) or
+                                  request.kind = deauth then
+                            locked
                           else if request.kind = forward then
                             forwarding
                           else if request.kind = change then

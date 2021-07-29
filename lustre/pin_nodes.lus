@@ -1,0 +1,473 @@
+--
+-- pin_nodes.lus
+--
+-- Single file (mostly) model designed to be more like what we might choose to
+-- generate automatically.
+
+include "pltl.lus"
+
+
+type system_state_type = enum { uninitialized, initialized };
+type auth_state_type = enum { unauthenticated, authenticated };
+type pin_type = int; -- could be made a "machine integer", but this is
+                     -- syntactically more complex and doesn't benefit the
+                     -- analysis in any way since we only reason about equality
+                     -- of PINs.
+type kind_type = enum { auth, deauth, forward, change };
+type retries_type = subrange [0, 6] of int;
+
+
+type config_type = struct {
+    max_retries : retries_type;
+    pin         : pin_type;
+    valid       : bool;
+};
+
+-- Defined to set an initial condition for analysis.
+const empty_config = config_type {
+    max_retries = 0;
+    pin         = 0;
+
+    -- explicitly model validity for 'Valid
+    valid = false;
+};
+
+
+-- Omit the data field, which is useless in the model (although having it
+-- doesn't hurt us on performance).
+type request_type = struct {
+    kind : kind_type;
+
+    -- if kind = auth or kind = change
+    pin : pin_type;
+
+    valid : bool;
+};
+
+-- Defined to set an initial condition for analysis.
+const empty_request = request_type {
+    kind = forward;
+    pin  = 0;
+
+    -- explicitly model validity for 'Valid
+    valid = false;
+};
+
+
+-- For clarity and compactness, all variables in the rflx model are packed into
+-- a record.
+type vars_vector_type = struct {
+    system_state : system_state_type;
+    auth_state   : auth_state_type;
+    pin          : pin_type;
+    retries      : retries_type;
+    max_retries  : retries_type;
+    request      : request_type;
+    config       : config_type;
+
+    -- Added to the rflx to represent access to the upstream. Since the
+    -- upstream has zero argument and zero returns, I can't detect a call to
+    -- a lustre node, even if I were allowed to make such a call.
+    use_upstream : bool;
+};
+
+
+-- Set initial values for variables.
+const init_vars = vars_vector_type {
+    system_state = uninitialized;
+    auth_state   = unauthenticated;
+    pin          = 0;
+    retries      = 0;
+    max_retries  = 0;
+    request      = empty_request;
+    config       = empty_config;
+    use_upstream = false
+};
+
+
+-- Model the states explicitly - this makes the translation easier and aids in
+-- reading the counterexamples.
+type states_type = enum {
+    initialize_state, setup_state, locked_state, disabled_state,
+    authenticated_state, update_state, forwarding_state, error_state
+};
+
+
+-- These are uninterpreted functions (that don't kill IC3). We don't have one
+-- for the upstream, because a node call with no effect doesn't have any
+-- meaning in lustre (I'm not even sure it's possible).
+node imported user_channel() returns (message : request_type);
+node imported config_channel() returns (message : config_type);
+
+
+--
+-- initialize state
+--
+node initialize(
+    -- Prior values of our variables
+    pre_vars : vars_vector_type;
+) returns (
+    -- Transition target
+    transition : states_type;
+
+    -- Next values of our variables
+    vars : vars_vector_type;
+);
+let
+    vars = vars_vector_type {
+        system_state = uninitialized;
+        auth_state   = unauthenticated;
+
+        pin          = 0;
+        retries      = 0;
+        max_retries  = 0;
+
+        config       = config_channel();
+        request      = empty_request;
+
+        use_upstream = false;
+    };
+
+    transition = if not vars.config.valid then
+                     error_state
+                 else
+                     setup_state;
+tel;
+
+
+--
+-- setup state
+--
+node setup(
+    -- Prior values of our variables
+    pre_vars : vars_vector_type;
+) returns (
+    -- Transition target
+    transition : states_type;
+
+    -- Next values of our variables
+    vars : vars_vector_type;
+);
+let
+    vars = vars_vector_type {
+        pin          = pre_vars.config.pin;
+        max_retries  = pre_vars.config.max_retries;
+        system_state = initialized;
+
+        -- frame condition
+        auth_state   = pre_vars.auth_state;
+        retries      = pre_vars.retries;
+        request      = pre_vars.request;
+        config       = pre_vars.config;
+        use_upstream = pre_vars.use_upstream;
+    };
+
+    transition = locked_state;
+tel;
+
+
+--
+-- locked state
+--
+node locked(
+    -- Prior values of our variables
+    pre_vars : vars_vector_type;
+) returns (
+    -- Transition target
+    transition : states_type;
+
+    -- Next values of our variables
+    vars  : vars_vector_type;
+);
+let
+    vars = vars_vector_type {
+        auth_state = unauthenticated;
+        request    = user_channel();
+        retries    = pre_vars.retries + 1;
+
+        -- frame condition
+        system_state = pre_vars.system_state;
+        pin          = pre_vars.pin;
+        max_retries  = pre_vars.retries;
+        config       = pre_vars.config;
+        use_upstream = pre_vars.use_upstream;
+    };
+
+    transition = if not vars.request.valid then
+                     error_state
+                 else if vars.retries >= vars.max_retries then
+                     disabled_state
+                 else if vars.request.kind = auth and vars.request.pin = vars.pin then
+                     authenticated_state
+                 else if (vars.request.kind = auth and vars.request.pin <> vars.pin) or
+                         vars.request.kind = deauth then
+                     locked_state
+                 else
+                     error_state;
+tel;
+
+
+--
+-- disabled state
+--
+node disabled(
+    -- Prior values of our variables
+    pre_vars : vars_vector_type;
+) returns (
+    -- Transition target
+    transition : states_type;
+
+    -- Next values of our variables
+    vars : vars_vector_type;
+);
+let
+    vars       = pre_vars;
+    transition = disabled_state;
+tel;
+
+
+--
+-- authenticated state
+--
+node authenticated(
+    -- Prior values of our variables
+    pre_vars : vars_vector_type;
+) returns (
+    -- Transition target
+    transition : states_type;
+
+    -- Next values of our variables
+    vars : vars_vector_type;
+);
+let
+    vars = vars_vector_type {
+        auth_state = authenticated;
+        retries    = 0;
+        request    = user_channel();
+
+        -- frame condition
+        system_state = pre_vars.system_state;
+        pin          = pre_vars.pin;
+        max_retries  = pre_vars.retries;
+        config       = pre_vars.config;
+        use_upstream = pre_vars.use_upstream;
+    };
+
+    transition = if not vars.request.valid then
+                     error_state
+                 else if vars.request.kind = auth and vars.request.pin = vars.pin then
+                     authenticated_state
+                 else if (vars.request.kind = auth and vars.request.pin <> vars.pin) or
+                         vars.request.kind = deauth then
+                     locked_state
+                 else if vars.request.kind = forward then
+                     forwarding_state
+                 else if vars.request.kind = change then
+                     update_state
+                 else
+                     error_state;
+tel;
+
+
+--
+-- update state
+--
+node update(
+    -- Prior values of our variables
+    pre_vars : vars_vector_type;
+) returns (
+    -- Transition target
+    transition : states_type;
+
+    -- Next values of our variables
+    vars : vars_vector_type;
+);
+let
+    vars = vars_vector_type {
+        pin = pre_vars.request.pin;
+
+        -- frame condition
+        system_state = pre_vars.system_state;
+        auth_state   = pre_vars.auth_state;
+        retries      = pre_vars.retries;
+        max_retries  = pre_vars.retries;
+        request      = pre_vars.request;
+        config       = pre_vars.config;
+        use_upstream = pre_vars.use_upstream;
+    };
+
+    transition = authenticated_state;
+tel;
+
+
+--
+-- forwarding state
+--
+node forwarding(
+    -- Prior values of our variables
+    pre_vars : vars_vector_type;
+) returns (
+    -- Transition target
+    transition : states_type;
+
+    -- Next values of our variables
+    vars : vars_vector_type;
+);
+let
+    vars = vars_vector_type {
+        use_upstream = true;
+
+        -- frame condition
+        system_state = pre_vars.system_state;
+        auth_state   = pre_vars.auth_state;
+        pin          = pre_vars.pin;
+        retries      = pre_vars.retries;
+        max_retries  = pre_vars.retries;
+        request      = pre_vars.request;
+        config       = pre_vars.config;
+    };
+
+    transition = authenticated_state;
+tel;
+
+
+--
+-- error state
+--
+node error(
+    -- Prior values of our variables
+    pre_vars : vars_vector_type;
+) returns (
+    -- Transition target
+    transition : states_type;
+
+    -- Next values of our variables
+    vars : vars_vector_type;
+);
+let
+    vars       = pre_vars;
+    transition = error_state;
+tel;
+
+
+--
+-- authentication
+--
+-- Top-level node - no inputs; no outputs; just models our system
+node authentication() returns ();
+var
+    -- Represent the current state.
+    current_state : states_type;
+
+    -- Represent the transition target.
+    transition : states_type;
+
+    -- Variables, packed into a record.
+    vars : vars_vector_type;
+let
+    -- This helps me read counterexamples
+    current_state = initialize_state -> pre(transition);
+
+    -- Transition and update variables
+    (transition,vars) = if current_state = initialize_state then
+                            initialize(init_vars -> pre(vars))
+
+                        else if current_state = setup_state then
+                            setup(init_vars -> pre(vars))
+
+                        else if current_state = locked_state then
+                            locked(init_vars -> pre(vars))
+
+                        else if current_state = disabled_state then
+                            disabled(init_vars -> pre(vars))
+
+                        else if current_state = authenticated_state then
+                            authenticated(init_vars -> pre(vars))
+
+                        else if current_state = update_state then
+                            update(init_vars -> pre(vars))
+
+                        else if current_state = forwarding_state then
+                            forwarding(init_vars -> pre(vars))
+
+                        else -- error_state
+                            error(init_vars -> pre(vars));
+
+
+    -- ===================================================================== --
+    -- Properties
+    --
+    -- These are taken from the rflx. We might want more, to ensure the model
+    -- is correct. I'm especially concerned that the retry timing is wrong but
+    -- haven't thought terribly hard about it.
+    --
+    -- O() means "Once" in PLTL: O(p) is true at the time p becomes true and
+    -- remains true thereafter.
+
+
+    -- I decided that "PIN is changed" should mean _after_ authentication only.
+    check "if PIN is changed then System_State = Uninitialized or Auth_State = Authenticated"
+    (
+        O(transition = authenticated_state) and
+        (0 -> pre(vars.pin)) <> vars.pin
+    ) => (
+        vars.system_state = uninitialized or
+        vars.auth_state   = authenticated
+    );
+
+    -- Currently false, because Max_Retries may be zero. Even once we fix that,
+    -- need to restrict to after set up.
+    check "if Retries >= Max_Retries then transition target is Disabled"
+    (
+        vars.retries >= vars.max_retries
+    ) => (
+        transition = disabled_state
+    );
+
+    check "if transition target is Authenticated then Retries < Max_Retries and Request.Kind = Auth and Request.PIN = PIN"
+    (
+        transition = authenticated_state
+    ) => (
+        vars.retries < vars.max_retries and
+        vars.request.kind = auth and
+        vars.request.pin  = vars.pin
+    );
+
+    -- Currently false: retries = max retries sends us to disabled
+    check "if Request.Kind = Auth and Request.PIN /= PIN then transition target is Locked"
+    (
+        vars.request.kind = auth and
+        vars.request.pin <> vars.pin
+    ) => (
+        transition = locked_state
+    );
+
+    check "if Upstream_Channel'Write (Request) is used then Request.Kind = Forward"
+    (
+        vars.use_upstream
+    ) => (
+        vars.request.kind = forward
+    );
+
+    check "if Upstream_Channel'Write is used then Auth_State = Authenticated"
+    (
+        vars.use_upstream
+    ) => (
+        vars.auth_state = authenticated
+    );
+
+    check "if Config is changed then System_State = Uninitialized and Auth_State = Unauthenticated"
+    (
+        (empty_config -> pre(vars.config)) <> vars.config
+    ) => (
+        vars.system_state = uninitialized and
+        vars.auth_state   = unauthenticated
+    );
+
+    check "if System_State = Initialized then System_State is not changed"
+    (
+        O(vars.system_state = initialized)
+    ) => (
+        vars.system_state = initialized
+    );
+tel;
