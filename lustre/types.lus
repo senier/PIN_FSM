@@ -1,0 +1,44 @@
+--
+-- types.lus
+--
+
+type system_state = enum { uninitialized, initialized };
+type auth_state = enum { unauthenticated, authenticated_ };
+type pin = int; -- could be made a "machine integer", but this is syntactically
+                -- more complex and doesn't benefit the analysis in any way.
+type kind = enum { auth, deauth, forward, change };
+type retries = subrange [0, 6] of int;
+type data = int; -- proxy for `opaque`
+
+type config = struct {
+    max_retries : retries;
+    pin         : pin;
+    valid       : bool;
+};
+
+-- Defined to set an initial condition for analysis.
+const empty_config = config {
+    max_retries = 0;
+    pin = 0;
+    valid = false;
+};
+
+type request = struct {
+    kind : kind;
+
+    -- if kind = auth or kind = change
+    pin  : pin;
+
+    -- if kind = forward
+    data : data;
+
+    valid : bool;
+};
+
+-- Defined to set an initial condition for analysis.
+const empty_request = request {
+    kind = forward;
+    pin = 0;
+    data = 0;
+    valid = false;
+};

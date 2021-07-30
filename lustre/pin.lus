@@ -1,0 +1,264 @@
+--
+-- pin.lus
+--
+
+include "types.lus"
+include "pltl.lus"
+
+
+-- These are uninterpreted functions (that don't kill IC3). We don't have one
+-- for the upstream, because a node call with no effect doesn't have any
+-- meaning in lustre (I'm not even sure it's possible).
+node imported user_channel() returns (message : request);
+node imported config_channel() returns (message : config);
+
+
+-- Model the states explicitly - this makes the translation easier and aids in
+-- reading the counterexamples.
+type states = enum {
+    initialize, set_up, locked, disabled, authenticated,
+    update, forwarding, error
+};
+
+
+--
+-- authentication
+--
+-- Top-level node - no inputs; no outputs; just models our system
+node authentication() returns ();
+var
+    -- Represent the current state.
+    current_state : states;
+
+    -- Represent the transition target.
+    transition : states;
+
+    -- State vector from the rflx
+    system_state : system_state;
+    auth_state : auth_state;
+    pin : pin;
+    retries : retries;
+    max_retries : retries;
+    request : request;
+    config : config;
+
+    -- Model a call to Upstream_Channel'Write explicitly with a boolean flag.
+    use_upstream : bool;
+
+let
+    -- This helps me read counterexamples; it also lets me set the initial
+    -- state in this one place.
+    current_state = initialize -> pre(transition);
+
+    -- We only read a new config in certain states. We also want to use the
+    -- read value, so we have to do it here, outside of the big transition
+    -- statement below. This may challenge automatic translation somewhat?
+    config =    if current_state = initialize then
+                    config_channel()
+                else
+                    empty_config -> pre(config);
+
+
+    -- As above.
+    request =   if current_state = locked or
+                   current_state = authenticated
+                then
+                    user_channel()
+                else
+                    empty_request -> pre(request);
+
+
+    -- This is the big transition statement. Lustre demands that we assign all
+    -- variables in this way.
+    (transition,
+     system_state,
+     auth_state,
+     pin,
+     retries,
+     max_retries,
+     use_upstream)= if current_state = initialize then
+                        ((if not config.valid then
+                            error
+                          else
+                            set_up),
+
+                        uninitialized,
+                        unauthenticated,
+                        0,
+                        0,
+                        0,
+                        false)
+
+                    else if current_state = set_up then
+                        (locked,
+
+                         initialized,
+                         pre(auth_state),
+                         config.pin,
+                         pre(retries),
+                         config.max_retries,
+                         false)
+
+                    else if current_state = locked then
+                        ((if not request.valid then
+                            error
+                          else if retries >= max_retries then
+                            disabled
+                          else if request.kind = auth and request.pin = pin then
+                            authenticated
+                          else if (request.kind = auth and request.pin <> pin) or
+                                  request.kind = deauth then
+                            locked
+                          else
+                            error),
+
+                         pre(system_state),
+                         unauthenticated,
+                         pre(pin),
+                         pre(retries) + 1,
+                         pre(max_retries),
+                         false)
+
+                    else if current_state = disabled then
+                        (disabled,
+
+                         pre(system_state),
+                         pre(auth_state),
+                         pre(pin),
+                         pre(retries),
+                         pre(max_retries),
+                         false)
+
+                    else if current_state = authenticated then
+                        ((if not request.valid then
+                            error
+                          else if request.kind = auth and request.pin = pin then
+                            authenticated
+                          else if (request.kind = auth and request.pin <> pin) or
+                                  request.kind = deauth then
+                            locked
+                          else if request.kind = forward then
+                            forwarding
+                          else if request.kind = change then
+                            update
+                          else
+                            error),
+
+                         pre(system_state),
+                         authenticated_,
+                         pre(pin),
+                         0,
+                         pre(max_retries),
+                         false)
+
+                    else if current_state = update then
+                        (authenticated,
+
+                         pre(system_state),
+                         pre(auth_state),
+                         request.pin,
+                         pre(retries),
+                         pre(max_retries),
+                         false)
+
+                    else if current_state = forwarding then
+                        (authenticated,
+
+                         pre(system_state),
+                         pre(auth_state),
+                         pre(pin),
+                         pre(retries),
+                         pre(max_retries),
+                         true)
+
+                    else -- error
+                        (error,
+
+                         pre(system_state),
+                         pre(auth_state),
+                         pre(pin),
+                         pre(retries),
+                         pre(max_retries),
+                         false);
+
+
+    -- ===================================================================== --
+    -- Properties
+    --
+    -- These are taken from the rflx. We might want more, to ensure the model
+    -- is correct. I'm especially concerned that the retry timing is wrong but
+    -- haven't thought terribly hard about it.
+    --
+    -- O() means "Once" in PLTL: O(p) is true at the time p becomes true and
+    -- remains true thereafter.
+
+
+    -- I decided that "PIN is changed" should mean _after_ authentication only.
+    check "if PIN is changed then System_State = Uninitialized or Auth_State = Authenticated"
+    (
+        O(transition = authenticated) and
+        (0 -> pre(pin)) <> pin
+    ) => (
+        system_state = uninitialized or
+        auth_state   = authenticated_
+    );
+
+    -- Currently false, because Max_Retries may be zero. Even once we fix that,
+    -- need to restrict to after set up.
+    check "if Retries >= Max_Retries then transition target is Disabled"
+    (
+        retries >= max_retries
+    ) => (
+        transition = disabled
+    );
+
+    -- Currently false, because update -> authenticated is unconditional and
+    -- because request is not reread until after entering authenticated state
+    -- (so request.kind = auth will fail).
+    check "if transition target is Authenticated then Retries < Max_Retries and Request.Kind = Auth and Request.PIN = PIN"
+    (
+        transition = authenticated
+    ) => (
+        retries < max_retries and
+        request.kind = auth and
+        request.pin  = pin
+    );
+
+    -- Currently false: retries = max retries sends us to disabled
+    check "if Request.Kind = Auth and Request.PIN /= PIN then transition target is Locked"
+    (
+        request.kind = auth and
+        request.pin <> pin
+    ) => (
+        transition = locked
+    );
+
+    check "if Upstream_Channel'Write (Request) is used then Request.Kind = Forward"
+    (
+        use_upstream
+    ) => (
+        request.kind = forward
+    );
+
+    check "if Upstream_Channel'Write is used then Auth_State = Authenticated"
+    (
+        use_upstream
+    ) => (
+        auth_state = authenticated_
+    );
+
+    check "if Config is changed then System_State = Uninitialized and Auth_State = Unauthenticated"
+    (
+        (empty_config -> pre(config)) <> config
+    ) => (
+        system_state = uninitialized and
+        auth_state   = unauthenticated
+    );
+
+    check "if System_State = Initialized then System_State is not changed"
+    (
+        O(system_state = initialized)
+    ) => (
+        system_state = initialized
+    );
+tel;
